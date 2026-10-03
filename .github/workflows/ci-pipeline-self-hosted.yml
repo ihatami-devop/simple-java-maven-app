@@ -1,0 +1,58 @@
+name: CI/CD Pipeline - AWS Infrastructure (ECR & Deploy)
+
+on:
+  push:
+    branches:
+      - AWS-Infrastructure
+
+jobs:
+  build-push-deploy:
+    runs-on: self-hosted  # Uses your EC2 self-hosted runner
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Uses the attached EC2 IAM Role automatically via IMDS
+      - name: Configure AWS Credentials from IAM Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-north-1
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image to ECR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          build-args: |
+            REVISION=${{ github.run_number }}
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/github-docker:1.0.${{ github.run_number }}
+            ${{ steps.login-ecr.outputs.registry }}/github-docker:latest
+
+      - name: Deploy Container from ECR Image
+        run: |
+          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/github-docker:1.0.${{ github.run_number }}"
+          
+          # Stop and remove existing container if running
+          docker stop java-app || true
+          docker rm java-app || true
+          
+          # Pull latest image from ECR
+          docker pull $IMAGE_URI
+          
+          # Run container mapping port 8080
+          docker run -d --name java-app -p 8080:8080 $IMAGE_URI
+
+      - name: Verify Application is Running
+        run: |
+          sleep 5
+          docker ps | grep java-app
+          curl -f http://localhost:8080 || exit 1
